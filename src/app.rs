@@ -1,16 +1,26 @@
+use crate::input::Prompt;
 use crate::storage::Storage;
+use crate::ui::explorer::ExplorerState;
 use crate::{model::*, storage};
 use std::collections::HashMap;
 
 pub struct App {
     pub settings: Settings,
 
+    pub state: State,
+
     pub storage: Storage,
     pub repository: Repository,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Settings {}
+
+#[derive(Default)]
+pub struct State {
+    pub prompt: Option<Prompt>,
+    pub explorer: ExplorerState,
+}
 
 #[derive(Default, Debug)]
 pub struct Repository {
@@ -20,9 +30,10 @@ pub struct Repository {
 }
 
 impl App {
-    pub fn new(settings: Settings, storage: Storage, repository: Repository) -> Self {
+    pub fn new(settings: Settings, state: State, storage: Storage, repository: Repository) -> Self {
         App {
             settings,
+            state,
             storage,
             repository,
         }
@@ -59,7 +70,11 @@ impl Repository {
 
 pub fn init() -> anyhow::Result<App> {
     let settings = Settings::default();
+    let mut state = State::default();
     let storage = storage::init_storage()?;
-    let repository = storage.load_repository()?;
-    Ok(App::new(settings, storage, repository))
+    let repository = storage::load::load_repository(&storage)?;
+
+    state.explorer.projects.items = repository.projects.keys().cloned().collect();
+
+    Ok(App::new(settings, state, storage, repository))
 }

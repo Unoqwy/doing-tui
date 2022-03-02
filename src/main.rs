@@ -1,6 +1,5 @@
 use std::io;
 
-use crossterm::event::{Event, KeyCode};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -9,6 +8,7 @@ use tui::backend::{Backend, CrosstermBackend};
 use tui::Terminal;
 
 mod app;
+mod input;
 mod model;
 mod storage;
 mod ui;
@@ -35,13 +35,8 @@ fn run<B: Backend>(terminal: &mut Terminal<B>) -> anyhow::Result<()> {
 
     loop {
         terminal.draw(|frame| ui::draw_frame(frame, &app))?;
-
-        if let Event::Key(key) = event::read()? {
-            match key.code {
-                KeyCode::Char('q') => break,
-                KeyCode::Char('?') => {}
-                _ => {}
-            }
+        if input::handle_event(&mut app, event::read()?)? {
+            break;
         }
     }
     Ok(())

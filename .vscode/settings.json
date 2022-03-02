@@ -1,0 +1,11 @@
+{
+  "sqltools.connections": [
+    {
+      "previewLimit": 50,
+      "driver": "SQLite",
+      "name": "Local",
+      "database": "${workspaceFolder:doing-tui}/local.db"
+    }
+  ],
+  "sqltools.useNodeRuntime": true
+}
