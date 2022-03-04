@@ -60,3 +60,9 @@ impl Task {
         Self { id, name, tags }
     }
 }
+
+impl From<&Project> for ProjectId {
+    fn from(project: &Project) -> Self {
+        project.id
+    }
+}

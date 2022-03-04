@@ -1,5 +1,5 @@
-use crate::app::App;
-use crate::model::{Project, ProjectId, TaskId};
+use crate::app::{App, Repository};
+use crate::model::{Project, ProjectId};
 
 pub trait Explorer {
     fn previous(&mut self);
@@ -15,8 +15,7 @@ pub struct ExplorerGroup<T> {
 #[derive(Default, Debug)]
 pub struct ExplorerState {
     pub projects: ExplorerGroup<ProjectId>,
-    pub tasks: Option<ExplorerGroup<TaskId>>,
-    pub tasks_unfocused: bool,
+    pub collapsed: bool,
 }
 
 impl<T> Default for ExplorerGroup<T> {
@@ -44,6 +43,17 @@ impl<T> Explorer for ExplorerGroup<T> {
 }
 
 impl ExplorerState {
+    pub fn sync(&mut self, repository: &Repository) {
+        let selected_id = self.projects.items.get(self.projects.selected).cloned();
+        let mut items: Vec<&Project> = repository.projects.values().collect();
+        items.sort_by_cached_key(|item| item.name.clone());
+        let items: Vec<ProjectId> = items.into_iter().map(|project| project.id).collect();
+        self.projects.selected = selected_id
+            .and_then(|id| items.iter().position(|item| item.eq(&id)))
+            .unwrap_or(0);
+        self.projects.items = items;
+    }
+
     pub fn projects<'a>(&self, app: &'a App) -> Vec<&'a Project> {
         self.projects
             .items
@@ -57,17 +67,12 @@ impl ExplorerState {
             .collect()
     }
 
-    pub fn previous(&mut self) {
-        match &mut self.tasks {
-            Some(e) if !self.tasks_unfocused => e.previous(),
-            _ => self.projects.previous(),
-        }
-    }
-
-    pub fn next(&mut self) {
-        match &mut self.tasks {
-            Some(e) if !self.tasks_unfocused => e.next(),
-            _ => self.projects.next(),
-        }
+    pub fn selected_project<'a>(&self, app: &'a App) -> Option<&'a Project> {
+        self.projects.items.get(self.projects.selected).map(|id| {
+            app.repository
+                .projects
+                .get(id)
+                .expect("Explorer is out of sync with repository")
+        })
     }
 }

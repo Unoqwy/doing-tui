@@ -42,7 +42,13 @@ impl Storage {
         Ok(Project::new(ProjectId::from(id), name, Vec::new()))
     }
 
-    pub fn create_task(&self, project_id: ProjectId, name: String) -> anyhow::Result<Task> {
+    pub fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
+        self.connection
+            .execute("DELETE FROM Project WHERE id = ?", params![id.0])?;
+        Ok(())
+    }
+
+    pub fn create_task(&self, project_id: &ProjectId, name: String) -> anyhow::Result<Task> {
         self.connection.execute(
             "INSERT INTO Task (project_id, name) VALUES (?, ?)",
             params![project_id.0, name],

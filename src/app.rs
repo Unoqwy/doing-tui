@@ -18,8 +18,21 @@ pub struct Settings {}
 
 #[derive(Default)]
 pub struct State {
+    pub focus: Pane,
     pub prompt: Option<Prompt>,
+
     pub explorer: ExplorerState,
+}
+
+pub enum Pane {
+    Explorer,
+    Main,
+}
+
+impl Default for Pane {
+    fn default() -> Self {
+        Self::Explorer
+    }
 }
 
 #[derive(Default, Debug)]
@@ -36,6 +49,18 @@ impl App {
             state,
             storage,
             repository,
+        }
+    }
+
+    pub fn sync(&mut self) {
+        self.state.explorer.sync(&self.repository);
+    }
+
+    pub fn update_focus(&mut self) {
+        if self.state.explorer.collapsed {
+            self.state.focus = Pane::Main;
+        } else {
+            self.state.focus = Pane::Explorer;
         }
     }
 }
@@ -66,15 +91,20 @@ impl Repository {
     pub fn add_project(&mut self, project: Project) {
         self.projects.insert(project.id, project);
     }
+
+    pub fn remove_project(&mut self, project_id: &ProjectId) {
+        self.projects.remove(project_id);
+    }
 }
 
 pub fn init() -> anyhow::Result<App> {
     let settings = Settings::default();
-    let mut state = State::default();
+    let state = State::default();
     let storage = storage::init_storage()?;
     let repository = storage::load::load_repository(&storage)?;
 
-    state.explorer.projects.items = repository.projects.keys().cloned().collect();
+    let mut app = App::new(settings, state, storage, repository);
+    app.state.explorer.sync(&app.repository);
 
-    Ok(App::new(settings, state, storage, repository))
+    Ok(app)
 }
