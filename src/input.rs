@@ -1,6 +1,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent};
 
 use crate::app::{App, Pane};
+use crate::model::{ProjectId, TaskId};
 use crate::ui::explorer::Explorer;
 
 pub enum Prompt {
@@ -76,15 +77,17 @@ pub fn handle_event(app: &mut App, event: Event) -> anyhow::Result<bool> {
                         input.value.pop();
                     }
                     KeyCode::Enter => {
-                        let prompt = std::mem::replace(&mut app.state.prompt, None).unwrap();
-                        if let Prompt::Input(input) = prompt {
-                            let callback = input.callback;
-                            callback(app, input.value)?;
+                        if !input.value.is_empty() {
+                            let prompt = std::mem::replace(&mut app.state.prompt, None).unwrap();
+                            if let Prompt::Input(input) = prompt {
+                                let callback = input.callback;
+                                callback(app, input.value)?;
+                            }
                         }
                     }
                     _ => {}
                 },
-                Prompt::Confirm(confirm) => match key.code {
+                Prompt::Confirm(_) => match key.code {
                     KeyCode::Esc => {
                         app.state.prompt = None;
                     }
@@ -107,9 +110,23 @@ pub fn handle_event(app: &mut App, event: Event) -> anyhow::Result<bool> {
                     app.state.explorer.collapsed = c == '<';
                     app.update_focus();
                 }
+                KeyCode::Enter => {
+                    if matches!(app.state.focus, Pane::ProjectExplorer) {
+                        app.state.explorer.collapsed = true;
+                        app.update_focus();
+                    }
+                }
+                KeyCode::Esc => {
+                    if matches!(app.state.focus, Pane::Main) {
+                        app.state.explorer.collapsed = false;
+                        app.update_focus();
+                    }
+                }
                 _ => match app.state.focus {
-                    Pane::Explorer => handle_explorer_key(key, app)?,
-                    Pane::Main => {}
+                    Pane::ProjectExplorer => handle_project_explorer_key(key, app)?,
+                    Pane::Main => {
+                        handle_main_key(key, app)?;
+                    }
                 },
             }
         }
@@ -117,13 +134,15 @@ pub fn handle_event(app: &mut App, event: Event) -> anyhow::Result<bool> {
     Ok(false)
 }
 
-fn handle_explorer_key(key: KeyEvent, app: &mut App) -> anyhow::Result<()> {
+fn handle_project_explorer_key(key: KeyEvent, app: &mut App) -> anyhow::Result<()> {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
             app.state.explorer.projects.previous();
+            app.state.explorer.project_changed(&app.repository);
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.state.explorer.projects.next();
+            app.state.explorer.project_changed(&app.repository);
         }
         KeyCode::Char('N') => {
             app.state.prompt = Prompt::input(InputPrompt::new("New Project", 20, |app, name| {
@@ -134,22 +153,76 @@ fn handle_explorer_key(key: KeyEvent, app: &mut App) -> anyhow::Result<()> {
             }));
         }
         KeyCode::Char('D') => {
-            let project = app.state.explorer.selected_project(app);
-            if let Some(project) = project {
-                let id = project.id;
-                app.state.prompt =
-                    Prompt::confirm(ConfirmPrompt::new("deleting a project", move |app| {
+            if let Some(project_id) = app
+                .state
+                .explorer
+                .projects
+                .selected::<ProjectId>(&app.repository)
+                .cloned()
+            {
+                app.state.prompt = Prompt::confirm(ConfirmPrompt::new(
+                    "deleting selected project",
+                    move |app| {
                         if app.state.explorer.projects.selected > 0 {
                             app.state.explorer.projects.selected -= 1;
                         }
-                        app.storage.delete_project(&id)?;
-                        app.repository.remove_project(&id);
+                        app.storage.delete_project(&project_id)?;
+                        app.repository.remove_project(&project_id);
+                        app.sync();
+                        Ok(())
+                    },
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_main_key(key: KeyEvent, app: &mut App) -> anyhow::Result<()> {
+    if let Some(project_id) = app
+        .state
+        .explorer
+        .projects
+        .selected::<ProjectId>(&app.repository)
+    {
+        let tasks = app
+            .state
+            .explorer
+            .tasks
+            .as_mut()
+            .expect("Explorer tasks not in sync");
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                tasks.previous();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                tasks.next();
+            }
+            KeyCode::Char('N') => {
+                let project_id = *project_id;
+                app.state.prompt =
+                    Prompt::input(InputPrompt::new("New Task", 150, move |app, name| {
+                        let task = app.storage.create_task(&project_id, name)?;
+                        app.repository.add_task(task);
                         app.sync();
                         Ok(())
                     }));
             }
+            KeyCode::Char('D') => {
+                let id = tasks.selected::<TaskId>(&app.repository).cloned();
+                if let Some(id) = id {
+                    app.state.prompt =
+                        Prompt::confirm(ConfirmPrompt::new("deleting selected task", move |app| {
+                            app.storage.delete_task(&id)?;
+                            app.repository.remove_task(&id);
+                            app.sync();
+                            Ok(())
+                        }));
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
     Ok(())
 }

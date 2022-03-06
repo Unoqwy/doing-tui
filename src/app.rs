@@ -25,13 +25,13 @@ pub struct State {
 }
 
 pub enum Pane {
-    Explorer,
+    ProjectExplorer,
     Main,
 }
 
 impl Default for Pane {
     fn default() -> Self {
-        Self::Explorer
+        Self::ProjectExplorer
     }
 }
 
@@ -60,26 +60,8 @@ impl App {
         if self.state.explorer.collapsed {
             self.state.focus = Pane::Main;
         } else {
-            self.state.focus = Pane::Explorer;
+            self.state.focus = Pane::ProjectExplorer;
         }
-    }
-}
-
-impl Repository {
-    pub fn get_tag_by_name<S>(&self, name: S) -> Option<&Tag>
-    where
-        S: AsRef<str>,
-    {
-        let name = name.as_ref();
-        self.tags.values().find(|t| t.name.eq(name))
-    }
-
-    pub fn get_project_by_name<S>(&self, name: S) -> Option<&Project>
-    where
-        S: AsRef<str>,
-    {
-        let name = name.as_ref();
-        self.projects.values().find(|p| p.name.eq(name))
     }
 }
 
@@ -88,12 +70,36 @@ impl Repository {
         self.tags.insert(tag.id, tag);
     }
 
+    pub fn remove_tag(&mut self, tag_id: &TagId) {
+        self.tags.remove(tag_id);
+    }
+
     pub fn add_project(&mut self, project: Project) {
         self.projects.insert(project.id, project);
     }
 
     pub fn remove_project(&mut self, project_id: &ProjectId) {
         self.projects.remove(project_id);
+    }
+
+    pub fn add_task(&mut self, task: Task) {
+        if let Some(project) = self.projects.get_mut(&task.project_id) {
+            project.tasks.push(task.id);
+        }
+        self.tasks.insert(task.id, task);
+    }
+
+    pub fn remove_task(&mut self, task_id: &TaskId) {
+        if let Some(task) = self.tasks.remove(task_id) {
+            if let Some(project) = self.projects.get_mut(&task.project_id) {
+                let index = project
+                    .tasks
+                    .iter()
+                    .position(|id| id.eq(&task.id))
+                    .expect("Tasks were not synced for project");
+                project.tasks.remove(index);
+            }
+        }
     }
 }
 

@@ -32,14 +32,28 @@ impl Storage {
         self.connection
             .execute("INSERT INTO Tag (name) VALUES (?)", params![name])?;
         let id = self.connection.last_insert_rowid();
-        Ok(Tag::new(TagId::from(id), name))
+        Ok(Tag {
+            id: TagId::from(id),
+            name,
+        })
+    }
+
+    pub fn delete_tag(&self, id: &TagId) -> anyhow::Result<()> {
+        self.connection
+            .execute("DELETE FROM Tag WHERE id = ?", params![id.0])?;
+        Ok(())
     }
 
     pub fn create_project(&self, name: String) -> anyhow::Result<Project> {
         self.connection
             .execute("INSERT INTO Project (name) VALUES (?)", params![name])?;
         let id = self.connection.last_insert_rowid();
-        Ok(Project::new(ProjectId::from(id), name, Vec::new()))
+        Ok(Project {
+            id: ProjectId::from(id),
+            name,
+            default_tags: Vec::new(),
+            tasks: Vec::new(),
+        })
     }
 
     pub fn delete_project(&self, id: &ProjectId) -> anyhow::Result<()> {
@@ -54,6 +68,17 @@ impl Storage {
             params![project_id.0, name],
         )?;
         let id = self.connection.last_insert_rowid();
-        Ok(Task::new(TaskId::from(id), name, Vec::new()))
+        Ok(Task {
+            id: TaskId::from(id),
+            project_id: *project_id,
+            name,
+            tags: Vec::new(),
+        })
+    }
+
+    pub fn delete_task(&self, id: &TaskId) -> anyhow::Result<()> {
+        self.connection
+            .execute("DELETE FROM Task WHERE id = ?", params![id.0])?;
+        Ok(())
     }
 }
