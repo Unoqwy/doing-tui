@@ -104,6 +104,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm 0.23.0",
+ "lazy_static",
  "refinery",
  "rusqlite",
  "serde",

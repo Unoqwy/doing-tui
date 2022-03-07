@@ -43,6 +43,16 @@ pub struct Task {
     pub tags: Vec<TagId>,
 }
 
+pub trait FromId<Id> {
+    fn from_id<'a>(id: &'a Id, repository: &'a Repository) -> &'a Self;
+}
+
+impl From<&Tag> for TagId {
+    fn from(tag: &Tag) -> Self {
+        tag.id
+    }
+}
+
 impl From<&Project> for ProjectId {
     fn from(project: &Project) -> Self {
         project.id
@@ -55,8 +65,13 @@ impl From<&Task> for TaskId {
     }
 }
 
-pub trait FromId<Id> {
-    fn from_id<'a>(id: &'a Id, repository: &'a Repository) -> &'a Self;
+impl FromId<TagId> for Tag {
+    fn from_id<'a>(id: &TagId, repository: &'a Repository) -> &'a Self {
+        repository
+            .tags
+            .get(id)
+            .expect("Repository is out of sync (tags)")
+    }
 }
 
 impl FromId<ProjectId> for Project {
@@ -68,23 +83,11 @@ impl FromId<ProjectId> for Project {
     }
 }
 
-impl FromId<ProjectId> for ProjectId {
-    fn from_id<'a>(id: &'a ProjectId, _: &'a Repository) -> &'a Self {
-        id
-    }
-}
-
 impl FromId<TaskId> for Task {
     fn from_id<'a>(id: &TaskId, repository: &'a Repository) -> &'a Self {
         repository
             .tasks
             .get(id)
             .expect("Repository is out of sync (tasks)")
-    }
-}
-
-impl FromId<TaskId> for TaskId {
-    fn from_id<'a>(id: &'a TaskId, _: &'a Repository) -> &'a Self {
-        id
     }
 }

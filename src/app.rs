@@ -19,7 +19,7 @@ pub struct Settings {}
 #[derive(Default)]
 pub struct State {
     pub focus: Pane,
-    pub prompt: Option<Prompt>,
+    pub prompt_stack: Vec<Prompt>,
 
     pub explorer: ExplorerState,
 }
@@ -61,6 +61,24 @@ impl App {
             self.state.focus = Pane::Main;
         } else {
             self.state.focus = Pane::ProjectExplorer;
+        }
+    }
+
+    pub fn show_prompt(&mut self, prompt: Prompt) {
+        self.state.prompt_stack.push(prompt);
+    }
+
+    pub fn close_prompt(&mut self) -> Option<Prompt> {
+        self.state.prompt_stack.pop()
+    }
+
+    pub fn prompt(&self) -> Option<&Prompt> {
+        self.state.prompt_stack.last()
+    }
+
+    pub fn awake_prompt(&mut self) {
+        if let Some(last) = self.state.prompt_stack.last_mut() {
+            last.awake(&self.repository);
         }
     }
 }

@@ -1,44 +1,95 @@
-use crossterm::event::{Event, KeyCode, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, Pane};
-use crate::model::{ProjectId, TaskId};
-use crate::ui::explorer::Explorer;
+use crate::app::{App, Pane, Repository};
+use crate::model::TagId;
+use crate::prompts;
+use crate::ui::explorer::{Explorer, ExplorerGroup};
 
 pub enum Prompt {
     Input(InputPrompt),
+    TagSelect(TagSelectPrompt),
     Confirm(ConfirmPrompt),
 }
 
 impl Prompt {
-    pub fn input(inner: InputPrompt) -> Option<Self> {
-        Some(Self::Input(inner))
+    pub fn suggest(self, suggest: String) -> Self {
+        match self {
+            Self::Input(input) => Self::Input(input.suggest(suggest)),
+            _ => unimplemented!("Suggest on prompt is only a shorthand for input prompts"),
+        }
     }
 
-    pub fn confirm(inner: ConfirmPrompt) -> Option<Self> {
-        Some(Self::Confirm(inner))
+    pub fn awake(&mut self, repository: &Repository) {
+        match self {
+            Self::TagSelect(tag_select) => tag_select.update(repository),
+            _ => {}
+        }
     }
 }
 
 pub struct InputPrompt {
     pub title: String,
-    pub limit: usize,
     pub callback: Box<dyn FnOnce(&mut App, String) -> anyhow::Result<()>>,
 
+    pub limit: usize,
+    pub alphanumeric: bool,
     pub value: String,
 }
 
 impl InputPrompt {
-    pub fn new<S, C>(title: S, limit: usize, callback: C) -> Self
+    pub fn new<S, C>(title: S, limit: usize, only_ascii: bool, callback: C) -> Self
     where
         S: Into<String>,
         C: FnOnce(&mut App, String) -> anyhow::Result<()> + 'static,
     {
         Self {
             title: title.into(),
-            limit,
             callback: Box::new(callback),
+            limit,
+            alphanumeric: only_ascii,
             value: String::new(),
         }
+    }
+
+    pub fn suggest(mut self, suggest: String) -> Self {
+        self.value = suggest;
+        self
+    }
+}
+
+pub struct TagSelectPrompt {
+    pub title: String,
+    pub callback: Box<dyn FnOnce(&mut App, TagId) -> anyhow::Result<()>>,
+
+    pub search: String,
+    pub explorer: ExplorerGroup<TagId>,
+}
+
+impl TagSelectPrompt {
+    pub fn new<S, C>(title: S, callback: C) -> Self
+    where
+        S: Into<String>,
+        C: FnOnce(&mut App, TagId) -> anyhow::Result<()> + 'static,
+    {
+        Self {
+            title: title.into(),
+            callback: Box::new(callback),
+            search: String::new(),
+            explorer: ExplorerGroup::default(),
+        }
+    }
+
+    fn update(&mut self, repository: &Repository) {
+        let prefix = &self.search;
+        let no_filter = prefix.is_empty();
+        let items = repository
+            .tags
+            .values()
+            .filter(|tag| {
+                no_filter || (tag.name.len() >= prefix.len() && tag.name.starts_with(prefix))
+            })
+            .collect();
+        self.explorer.sync_and_sort(items, |item| item.name.clone());
     }
 }
 
@@ -62,40 +113,102 @@ impl ConfirmPrompt {
 
 pub fn handle_event(app: &mut App, event: Event) -> anyhow::Result<bool> {
     if let Event::Key(key) = event {
-        if let Some(prompt) = &mut app.state.prompt {
+        if let Some(prompt) = app.state.prompt_stack.last_mut() {
             match prompt {
                 Prompt::Input(input) => match key.code {
                     KeyCode::Esc => {
-                        app.state.prompt = None;
+                        app.close_prompt();
                     }
+                    KeyCode::Enter => {
+                        if !input.value.is_empty() {
+                            if let Some(Prompt::Input(input)) = app.close_prompt() {
+                                let callback = input.callback;
+                                callback(app, input.value)?;
+                                app.awake_prompt();
+                            }
+                        }
+                    }
+
                     KeyCode::Char(ch) => {
-                        if input.value.len() < input.limit {
-                            input.value.push(ch);
+                        if key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+                            && (!input.alphanumeric || ch.is_alphanumeric())
+                        {
+                            if input.value.len() < input.limit {
+                                input.value.push(ch);
+                            }
                         }
                     }
                     KeyCode::Backspace => {
                         input.value.pop();
                     }
+                    _ => {}
+                },
+                Prompt::TagSelect(tag_select) => match key.code {
+                    KeyCode::Esc => {
+                        app.close_prompt();
+                    }
                     KeyCode::Enter => {
-                        if !input.value.is_empty() {
-                            let prompt = std::mem::replace(&mut app.state.prompt, None).unwrap();
-                            if let Prompt::Input(input) = prompt {
-                                let callback = input.callback;
-                                callback(app, input.value)?;
+                        if let Some(selected) = tag_select.explorer.selected_raw().cloned() {
+                            if let Some(Prompt::TagSelect(tag_select)) = app.close_prompt() {
+                                let callback = tag_select.callback;
+                                callback(app, selected)?;
+                                app.awake_prompt();
                             }
                         }
+                    }
+
+                    KeyCode::Up => {
+                        tag_select.explorer.previous();
+                    }
+                    KeyCode::Down => {
+                        tag_select.explorer.next();
+                    }
+
+                    KeyCode::Char(ch) => {
+                        if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+                            if ch.is_alphanumeric() {
+                                tag_select.search.push(ch);
+                                tag_select.update(&app.repository);
+                            }
+                        } else if key.modifiers.contains(KeyModifiers::CONTROL) {
+                            match ch {
+                                'k' => {
+                                    tag_select.explorer.previous();
+                                }
+                                'j' => {
+                                    tag_select.explorer.next();
+                                }
+
+                                'n' => {
+                                    let suggest = tag_select.search.clone();
+                                    app.show_prompt(prompts::new_tag().suggest(suggest));
+                                }
+                                'd' => {
+                                    if let Some(tag_id) =
+                                        tag_select.explorer.selected_raw().cloned()
+                                    {
+                                        app.show_prompt(prompts::delete_tag(tag_id));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        tag_select.search.pop();
+                        tag_select.update(&app.repository);
                     }
                     _ => {}
                 },
                 Prompt::Confirm(_) => match key.code {
                     KeyCode::Esc => {
-                        app.state.prompt = None;
+                        app.close_prompt();
                     }
                     KeyCode::Enter => {
-                        let prompt = std::mem::replace(&mut app.state.prompt, None).unwrap();
-                        if let Prompt::Confirm(confirm) = prompt {
+                        if let Some(Prompt::Confirm(confirm)) = app.close_prompt() {
                             let callback = confirm.callback;
                             callback(app)?;
+                            app.awake_prompt();
                         }
                     }
                     _ => {}
@@ -103,12 +216,13 @@ pub fn handle_event(app: &mut App, event: Event) -> anyhow::Result<bool> {
             }
         } else {
             match key.code {
-                KeyCode::Char('q') => return Ok(true),
-                KeyCode::Char('?') => {}
-
-                KeyCode::Char(c @ '<') | KeyCode::Char(c @ '>') => {
-                    app.state.explorer.collapsed = c == '<';
-                    app.update_focus();
+                KeyCode::Esc => {
+                    if matches!(app.state.focus, Pane::Main) {
+                        app.state.explorer.collapsed = false;
+                        app.update_focus();
+                    } else {
+                        return Ok(true);
+                    }
                 }
                 KeyCode::Enter => {
                     if matches!(app.state.focus, Pane::ProjectExplorer) {
@@ -116,12 +230,14 @@ pub fn handle_event(app: &mut App, event: Event) -> anyhow::Result<bool> {
                         app.update_focus();
                     }
                 }
-                KeyCode::Esc => {
-                    if matches!(app.state.focus, Pane::Main) {
-                        app.state.explorer.collapsed = false;
-                        app.update_focus();
-                    }
+
+                KeyCode::Char('q') => return Ok(true),
+                KeyCode::Char('?') => {}
+                KeyCode::Char(c @ '<') | KeyCode::Char(c @ '>') => {
+                    app.state.explorer.collapsed = c == '<';
+                    app.update_focus();
                 }
+
                 _ => match app.state.focus {
                     Pane::ProjectExplorer => handle_project_explorer_key(key, app)?,
                     Pane::Main => {
@@ -145,33 +261,11 @@ fn handle_project_explorer_key(key: KeyEvent, app: &mut App) -> anyhow::Result<(
             app.state.explorer.project_changed(&app.repository);
         }
         KeyCode::Char('N') => {
-            app.state.prompt = Prompt::input(InputPrompt::new("New Project", 20, |app, name| {
-                let project = app.storage.create_project(name)?;
-                app.repository.add_project(project);
-                app.sync();
-                Ok(())
-            }));
+            app.show_prompt(prompts::new_project());
         }
         KeyCode::Char('D') => {
-            if let Some(project_id) = app
-                .state
-                .explorer
-                .projects
-                .selected::<ProjectId>(&app.repository)
-                .cloned()
-            {
-                app.state.prompt = Prompt::confirm(ConfirmPrompt::new(
-                    "deleting selected project",
-                    move |app| {
-                        if app.state.explorer.projects.selected > 0 {
-                            app.state.explorer.projects.selected -= 1;
-                        }
-                        app.storage.delete_project(&project_id)?;
-                        app.repository.remove_project(&project_id);
-                        app.sync();
-                        Ok(())
-                    },
-                ));
+            if let Some(project_id) = app.state.explorer.projects.selected_raw().cloned() {
+                app.show_prompt(prompts::delete_project(project_id));
             }
         }
         _ => {}
@@ -180,12 +274,7 @@ fn handle_project_explorer_key(key: KeyEvent, app: &mut App) -> anyhow::Result<(
 }
 
 fn handle_main_key(key: KeyEvent, app: &mut App) -> anyhow::Result<()> {
-    if let Some(project_id) = app
-        .state
-        .explorer
-        .projects
-        .selected::<ProjectId>(&app.repository)
-    {
+    if let Some(project_id) = app.state.explorer.projects.selected_raw() {
         let tasks = app
             .state
             .explorer
@@ -199,26 +288,25 @@ fn handle_main_key(key: KeyEvent, app: &mut App) -> anyhow::Result<()> {
             KeyCode::Down | KeyCode::Char('j') => {
                 tasks.next();
             }
+
             KeyCode::Char('N') => {
                 let project_id = *project_id;
-                app.state.prompt =
-                    Prompt::input(InputPrompt::new("New Task", 150, move |app, name| {
-                        let task = app.storage.create_task(&project_id, name)?;
-                        app.repository.add_task(task);
-                        app.sync();
-                        Ok(())
-                    }));
+                app.show_prompt(prompts::new_task(project_id));
             }
             KeyCode::Char('D') => {
-                let id = tasks.selected::<TaskId>(&app.repository).cloned();
-                if let Some(id) = id {
-                    app.state.prompt =
-                        Prompt::confirm(ConfirmPrompt::new("deleting selected task", move |app| {
-                            app.storage.delete_task(&id)?;
-                            app.repository.remove_task(&id);
-                            app.sync();
-                            Ok(())
-                        }));
+                if let Some(id) = tasks.selected_raw().cloned() {
+                    app.show_prompt(prompts::delete_task(id));
+                }
+            }
+
+            KeyCode::Char('t') => {
+                if let Some(task_id) = tasks.selected_raw().cloned() {
+                    let mut prompt = TagSelectPrompt::new("Add tag to task", move |app, tag_id| {
+                        // todo
+                        Ok(())
+                    });
+                    prompt.update(&app.repository);
+                    app.show_prompt(Prompt::TagSelect(prompt));
                 }
             }
             _ => {}

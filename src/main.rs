@@ -10,6 +10,7 @@ use tui::Terminal;
 mod app;
 mod input;
 mod model;
+mod prompts;
 mod storage;
 mod ui;
 

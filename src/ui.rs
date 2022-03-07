@@ -1,35 +1,31 @@
+use lazy_static::lazy_static;
+
 use tui::backend::Backend;
-use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use tui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::text::{Span, Spans};
-use tui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use tui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use tui::Frame;
 
 pub mod explorer;
+mod util;
 
 use crate::app::App;
 use crate::input::Prompt;
-use crate::model::{Project, Task};
+use crate::model::{Project, Tag, Task};
 
 use self::explorer::Explorer;
 
-fn list_position<'a>(area: Rect, position: usize, total: usize) -> Option<(Paragraph<'a>, Rect)> {
-    let position = format!("{} of {}", usize::min(position, total), total);
-    if area.width as usize > position.len() + 5 {
-        let width = position.len() as u16;
-        let position = Paragraph::new(position)
-            .alignment(Alignment::Right)
-            .style(Style::default().add_modifier(Modifier::DIM));
-        let rect = Rect::new(
-            area.x + area.width - 2 - width,
-            area.y + area.height - 1,
-            width,
-            1,
-        );
-        Some((position, rect))
-    } else {
-        None
-    }
+lazy_static! {
+    static ref MARGIN_BLOCK_H: Margin = Margin {
+        vertical: 0,
+        horizontal: 1,
+    };
+
+    // Bindings
+    static ref BINDINGS_PROMPT_TAG_SELECT: Vec<(&'static str, &'static str)> = [
+    ]
+    .into();
 }
 
 pub fn draw_frame<B: Backend>(f: &mut Frame<B>, app: &App) {
@@ -40,43 +36,140 @@ pub fn draw_frame<B: Backend>(f: &mut Frame<B>, app: &App) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Max(40), Constraint::Percentage(70)])
             .split(f.size());
-        draw_explorer(f, app, chunks[0]);
+        draw_project_explorer(f, app, chunks[0]);
         draw_main(f, app, chunks[1]);
     }
 
-    draw_overlays(f, app);
+    draw_prompt(f, app);
 }
 
-fn draw_overlays<B: Backend>(f: &mut Frame<B>, app: &App) {
-    let area = f.size();
-    if let Some(prompt) = &app.state.prompt {
-        let width = 70 * area.width / 100;
-        let rect = Rect::new((area.width - width) / 2, area.height / 2 - 2, width, 3);
+pub fn draw_prompt_footer<'a, B, Bd>(f: &mut Frame<B>, app: &App, area: Option<Rect>, bindings: Bd)
+where
+    B: Backend,
+    Bd: Into<Vec<(&'a str, &'a str)>>,
+{
+    if let Some(area) = area {
+        let bindings = util::bindings(bindings);
+        let stack_length = app.state.prompt_stack.len();
+        let stack_length = Paragraph::new(Span::styled(
+            format!("({})", stack_length),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::DIM),
+        ))
+        .alignment(Alignment::Right);
+        f.render_widget(bindings, area);
+        f.render_widget(stack_length, area);
+    }
+}
 
+fn draw_prompt<B: Backend>(f: &mut Frame<B>, app: &App) {
+    let area = f.size();
+    if let Some(prompt) = app.prompt() {
         match prompt {
             Prompt::Input(input) => {
+                let (area, clear, footer) = util::overlay(area, 3, true);
+                f.render_widget(Clear, clear);
+
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .title(input.title.as_ref());
                 let paragraph = Paragraph::new(input.value.as_ref()).block(block);
-                f.render_widget(Clear, rect);
-                f.render_widget(paragraph, rect);
-                f.set_cursor(rect.x + 1 + input.value.len() as u16, rect.y + 1);
+                f.render_widget(paragraph, area);
+                f.set_cursor(area.x + 1 + input.value.len() as u16, area.y + 1);
 
                 let input_len = input.value.len();
                 let char_count = format!("{}/{}", input_len, input.limit);
-                if rect.width as usize > input.title.len() + char_count.len() + 5 {
+                if area.width as usize > input.title.len() + char_count.len() + 5 {
                     let width = char_count.len() as u16;
                     let mut char_count =
                         Paragraph::new(char_count.as_ref()).alignment(Alignment::Right);
                     if input_len >= input.limit {
                         char_count = char_count.style(Style::default().fg(Color::Red));
                     }
-                    let rect = Rect::new(rect.x + rect.width - 2 - width, rect.y, width, 1);
+                    let rect = Rect::new(area.x + area.width - 2 - width, area.y, width, 1);
                     f.render_widget(char_count, rect);
                 }
+
+                draw_prompt_footer(f, app, footer, [("esc", "cancel"), ("enter", "continue")]);
+            }
+            Prompt::TagSelect(tag_select) => {
+                let (area, clear, footer) = util::overlay(area, 5 + area.height / 3, true);
+                f.render_widget(Clear, clear);
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Min(2),
+                        Constraint::Length(1),
+                    ])
+                    .split(area);
+
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(tag_select.title.as_ref());
+                let search = "Search: ";
+                let cursor = (
+                    chunks[1].x + 1 + (search.len() + tag_select.search.len()) as u16,
+                    chunks[1].y,
+                );
+                let search = Paragraph::new(Spans::from(vec![
+                    Span::styled(search, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::from(tag_select.search.as_ref()),
+                ]));
+
+                let divider = Paragraph::new(format!("├{}┤", "─".repeat(area.width as usize - 2)));
+
+                f.render_widget(block, area);
+                f.render_widget(search, chunks[1].inner(&MARGIN_BLOCK_H));
+                f.set_cursor(cursor.0, cursor.1);
+                f.render_widget(divider, chunks[2]);
+
+                let explorer = &tag_select.explorer;
+                explorer::draw_explorer(
+                    f,
+                    app,
+                    chunks[3].inner(&MARGIN_BLOCK_H),
+                    explorer,
+                    |tag: &Tag, selected| {
+                        let mut style = Style::default();
+                        if selected {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                        Spans::from(vec![
+                            Span::styled("* ", Style::default().add_modifier(Modifier::DIM)),
+                            Span::styled(&tag.name, style),
+                        ])
+                    },
+                    |p| p,
+                    false,
+                );
+                if let Some((position, area)) =
+                    util::list_position(area, explorer.selected + 1, explorer.items.len())
+                {
+                    f.render_widget(position, area);
+                }
+
+                draw_prompt_footer(
+                    f,
+                    app,
+                    footer,
+                    [
+                        ("esc", "cancel"),
+                        ("enter", "select"),
+                        ("ctrl+j", "down"),
+                        ("ctrl+k", "up"),
+                        ("ctrl+n", "create tag"),
+                    ],
+                );
             }
             Prompt::Confirm(confirm) => {
+                let (area, clear, footer) = util::overlay(area, 3, true);
+                f.render_widget(Clear, clear);
+
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .title("Confirmation required");
@@ -89,39 +182,25 @@ fn draw_overlays<B: Backend>(f: &mut Frame<B>, app: &App) {
                     Span::from("?"),
                 ]))
                 .block(block);
-                f.render_widget(Clear, rect);
-                f.render_widget(paragraph, rect);
+                f.render_widget(paragraph, area);
+
+                draw_prompt_footer(f, app, footer, [("esc", "cancel"), ("enter", "continue")]);
             }
         }
     }
 }
 
-fn draw_explorer<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
+fn draw_project_explorer<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title("Projects");
-    let selected = app.state.explorer.projects.selected;
-    let items: Vec<_> = app
-        .state
-        .explorer
-        .projects
-        .items::<Project>(&app.repository)
-        .into_iter()
-        .enumerate()
-        .map(|(idx, project)| {
-            let style = if idx == selected {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(project.name.as_ref()).style(style)
-        })
-        .collect();
-    let list = List::new(items).block(block);
-    f.render_widget(list, area);
-
-    let total = app.state.explorer.projects.items.len();
-    if let Some((p, rect)) = list_position(area, selected + 1, total) {
-        f.render_widget(p, rect);
-    }
+    explorer::draw_explorer(
+        f,
+        app,
+        area,
+        &app.state.explorer.projects,
+        |project: &Project, selected| util::default_list_item(&project.name, selected),
+        move |p| p.block(block),
+        true,
+    );
 }
 
 fn draw_main<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect) {
@@ -170,29 +249,26 @@ fn draw_project_pane<B: Backend>(f: &mut Frame<B>, app: &App, area: Rect, projec
         .split(area);
 
     // Task explorer
-    let block = Block::default().borders(Borders::ALL).title("Tasks");
     let explorer = app.state.explorer.tasks();
-    let tasks: Vec<_> = explorer
-        .items::<Task>(&app.repository)
-        .into_iter()
-        .enumerate()
-        .map(|(idx, task)| {
-            let style = if app.state.explorer.collapsed && idx == explorer.selected {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+    let block = Block::default().borders(Borders::ALL).title("Tasks");
+    explorer::draw_explorer(
+        f,
+        app,
+        chunks[0],
+        explorer,
+        |task: &Task, selected| {
+            let mut style = Style::default();
+            if app.state.explorer.collapsed && selected {
+                style = style.add_modifier(Modifier::BOLD);
+            }
             Spans::from(vec![
                 Span::styled("* ", Style::default().add_modifier(Modifier::DIM)),
                 Span::styled(&task.name, style),
             ])
-        })
-        .collect();
-    let tasks = Paragraph::new(tasks).block(block).wrap(Wrap { trim: true });
-    f.render_widget(tasks, chunks[0]);
-    if let Some((p, rect)) = list_position(chunks[0], explorer.selected + 1, explorer.items.len()) {
-        f.render_widget(p, rect);
-    }
+        },
+        move |p| p.block(block).wrap(Wrap { trim: true }),
+        true,
+    );
 
     // Task pane
     if let Some(task) = explorer.selected::<Task>(&app.repository) {
